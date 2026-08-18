@@ -3,6 +3,6 @@ re
 unicodedata
 pandas
 numpy 
-plotly.express 
+plotly
 streamlit 
 pathlib 
