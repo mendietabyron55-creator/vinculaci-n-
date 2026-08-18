@@ -1,8 +1,0 @@
-base64
-re
-unicodedata
-pandas
-numpy 
-plotly
-streamlit 
-pathlib 
