@@ -1,0 +1,8 @@
+base64
+re
+unicodedata
+pandas
+numpy 
+plotly.express 
+streamlit 
+pathlib 
