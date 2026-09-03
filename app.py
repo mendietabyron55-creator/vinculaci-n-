@@ -18,14 +18,14 @@ st.set_page_config(
 
 DATA_PATH = Path(__file__).parent / "REPORTE_CONSOLIDADO_MOVILIDAD_HUMANA_FINAL.xlsx"
 DATA_CACHE_PATH = DATA_PATH.with_suffix(".cache.pkl")
-DATA_CACHE_VERSION = 5
+DATA_CACHE_VERSION = 6
 
 # Rutas de los logos (ajusta el nombre/extensión si es necesario)
 LOGO1_PATH = Path(__file__).parent / "logo1.jpeg"   # Fundación Mensajeros de la Paz
 LOGO2_PATH = Path(__file__).parent / "logo2.jpeg"   # Tec.Azuay
 
 SI_NO_COLS = [
-    "atencion_emergente", "kit_aseo", "kit_salud", "kit_escolar",
+    "atencion_emergente", "kit_aseo", "kit_salud", "kit_escolar", "kit_otro",
     "enfermedad_catastrofica", "tiene_discapacidad", "embarazo", "estudiando",
     "atencion_trabajo_social", "atencion_psicologica", "atencion_legal",
     "serv_salud", "serv_educacion", "serv_junta_cantonal",
@@ -57,6 +57,7 @@ FRIENDLY_NAMES = {
     "kit_aseo": "Kit de aseo",
     "kit_salud": "Kit de salud",
     "kit_escolar": "Kit escolar",
+    "kit_otro": "Otro kit (alimentos, etc.)",
     "part_talleres_capacitacion": "Talleres de capacitación",
     "part_talleres_sensibilizacion": "Talleres de sensibilización",
     "part_encuentros_comunitarios": "Encuentros comunitarios",
@@ -72,6 +73,7 @@ PORTADA_CARDS = [
     "Situación Migratoria",
     "Asistencia Humanitaria",
     "Integración Comunitaria",
+    "Buscar por ID",
 ]
 
 # ----------------------------------------------------------------------------
@@ -131,6 +133,7 @@ COLOR_SECCIONES = {
     "Situación Migratoria": COLOR_CATEGORICAL[6],
     "Asistencia Humanitaria": COLOR_CATEGORICAL[2],
     "Integración Comunitaria": COLOR_CATEGORICAL[3],
+    "Buscar por ID": COLOR_CATEGORICAL[7],
 }
 
 # Icono por seccion, mostrado en las tarjetas de la portada.
@@ -141,6 +144,7 @@ PORTADA_ICONS = {
     "Situación Migratoria": "🛂",
     "Asistencia Humanitaria": "🎁",
     "Integración Comunitaria": "🤝",
+    "Buscar por ID": "🔎",
 }
 
 CHART_FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
@@ -246,6 +250,7 @@ COLUMN_MAP = {
     "KIT_DE_ASEO": "kit_aseo",
     "KIT_DE_SALUD": "kit_salud",
     "KIT_ESCOLAR": "kit_escolar",
+    "OTROS_SE_DEBE_ESPECIFICAR_QUE_OTRO_TIPO_DE_KIT_HUMANITARIO_FUE_ENTREGADO": "kit_otro_raw",
     "TIENE_ENFERMEDAD_CATASTROFICA": "enfermedad_catastrofica",
     "TIENE_DISCAPACIDAD": "tiene_discapacidad",
     "EMBARAZO_SOLO_PARA_MUJERES": "embarazo",
@@ -380,6 +385,30 @@ def _derive_persona_id(df: pd.DataFrame) -> pd.Series:
     return pd.Series(codes, index=df.index)
 
 
+def _derive_kit_otro(series: pd.Series) -> pd.Series:
+    """La columna de origen no es SI/NO: es texto libre (p.ej. 'ALIMENTOS',
+    'No aplica'). Se traduce a SI cuando se registró algo distinto de
+    'no aplica' (o variantes con errores de tipeo), y NO en caso contrario.
+    """
+    norm = series.map(_norm_text)
+    return norm.map(lambda v: np.nan if v == "" else ("NO" if v.startswith("NO APLICA") else "SI"))
+
+
+def _derive_nombre_completo(df: pd.DataFrame) -> pd.Series:
+    """Nombre y apellido en formato legible (Título), solo para el buscador
+    por ID. Se calcula aparte de persona_id para no depender del código
+    interno anónimo al mostrar resultados de búsqueda.
+    """
+    needed = {"nombres_raw", "apellidos_raw"}
+    if not needed.issubset(df.columns):
+        return pd.Series(np.nan, index=df.index)
+    nombres = df["nombres_raw"].fillna("").astype(str).str.strip()
+    apellidos = df["apellidos_raw"].fillna("").astype(str).str.strip()
+    completo = (nombres + " " + apellidos).str.strip().str.title()
+    completo = completo.str.replace(r"\s+", " ", regex=True)
+    return completo.replace({"": np.nan})
+
+
 def _clean_yes_no_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in SI_NO_COLS:
         if col in df.columns:
@@ -406,7 +435,10 @@ def _prepare_excel_data(df: pd.DataFrame) -> pd.DataFrame:
 
     df["periodo"] = _derive_periodo(df)
     df["persona_id"] = _derive_persona_id(df)
-    df = df.drop(columns=["nombres_raw", "apellidos_raw", "fecha_nac_raw"], errors="ignore")
+    df["nombre_completo"] = _derive_nombre_completo(df)
+    if "kit_otro_raw" in df.columns:
+        df["kit_otro"] = _derive_kit_otro(df["kit_otro_raw"])
+    df = df.drop(columns=["nombres_raw", "apellidos_raw", "fecha_nac_raw", "kit_otro_raw"], errors="ignore")
 
     if "edad_anios" in df.columns:
         df["edad_anios"] = df["edad_anios"].astype(str).str.extract(r"(\d+)", expand=False).astype(float)
@@ -421,7 +453,7 @@ def _prepare_excel_data(df: pd.DataFrame) -> pd.DataFrame:
     df["mes_num"] = df["periodo"].dt.month.astype("Int64")
 
     expected_cols = [
-        "periodo", "anio", "mes_num", "persona_id", "zona", "provincia", "distrito", "ciudad",
+        "periodo", "anio", "mes_num", "persona_id", "nombre_completo", "zona", "provincia", "distrito", "ciudad",
         "rango_edad", "sexo", "genero", "nacionalidad", "etnia",
         "situacion_movilidad", "forma_ingreso", "situacion_migratoria", "edad_anios",
         *SI_NO_COLS,
@@ -783,7 +815,7 @@ def plot_si_bars(cols: list[str], title: str, height: int = 420, color: str = CO
                 "n_valido": f[col].notna().sum(),
             })
     if not data:
-        st.info("No hay datos disponibles para esta seccion.")
+        st.info("No hay datos disponibles para esta sección.")
         return
     chart_df = pd.DataFrame(data).sort_values("pct_si", ascending=True)
     fig = px.bar(
@@ -802,7 +834,7 @@ if seccion_actual == PORTADA_CARDS[0]:
     fig_ts = px.line(ts, x="periodo", y="registros", markers=True, color_discrete_sequence=[COLOR_PRIMARY],
                       title="Evolución mensual")
     fig_ts.update_traces(line=dict(width=2), marker=dict(size=7))
-    fig_ts.update_layout(height=380, xaxis_title="Mes", yaxis_title="Numero de registros")
+    fig_ts.update_layout(height=380, xaxis_title="Mes", yaxis_title="Número de registros")
     _style_chart(fig_ts)
     st.plotly_chart(fig_ts, use_container_width=True)
 
@@ -820,7 +852,7 @@ if seccion_actual == PORTADA_CARDS[0]:
     with c2:
         edad = f["rango_edad"].value_counts().reset_index()
         edad.columns = ["rango_edad", "registros"]
-        fig_edad = px.pie(edad, names="rango_edad", values="registros", title="Distribucion por rango de edad",
+        fig_edad = px.pie(edad, names="rango_edad", values="registros", title="Distribución por rango de edad",
                            hole=0.4, color="rango_edad", color_discrete_map=COLOR_RANGO_EDAD)
         fig_edad.update_layout(height=380)
         _style_chart(fig_edad, legend=True)
@@ -830,7 +862,7 @@ if seccion_actual == PORTADA_CARDS[0]:
     with c3:
         genero = f["genero"].value_counts().reset_index()
         genero.columns = ["genero", "registros"]
-        fig_genero = px.bar(genero, x="genero", y="registros", title="Distribucion por genero",
+        fig_genero = px.bar(genero, x="genero", y="registros", title="Distribución por género",
                              color="genero", color_discrete_map=COLOR_GENERO, text="registros")
         fig_genero.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
         fig_genero.update_layout(height=350)
@@ -850,8 +882,8 @@ if seccion_actual == PORTADA_CARDS[0]:
 
     if f["edad_anios"].notna().sum() > 20:
         fig_hist = px.histogram(f.dropna(subset=["edad_anios"]), x="edad_anios", nbins=30,
-                                title="Distribucion de edad en anios", color_discrete_sequence=[COLOR_PRIMARY])
-        fig_hist.update_layout(height=320, xaxis_title="Edad", yaxis_title="Numero de registros")
+                                title="Distribución de edad en años", color_discrete_sequence=[COLOR_PRIMARY])
+        fig_hist.update_layout(height=320, xaxis_title="Edad", yaxis_title="Número de registros")
         _style_chart(fig_hist)
         st.plotly_chart(fig_hist, use_container_width=True)
     st.stop()
@@ -873,7 +905,7 @@ if seccion_actual == PORTADA_CARDS[2]:
             "serv_apoyo_custodia_familiar", "serv_discapacidades", "serv_adulto_mayor",
             "serv_cdi", "serv_cnh",
         ],
-        "Intervenciones tecnicas y servicios recibidos (% SI)",
+        "Intervenciones técnicas y servicios recibidos (% SI)",
         height=560,
         color=COLOR_SECCIONES[PORTADA_CARDS[2]],
     )
@@ -884,7 +916,7 @@ if seccion_actual == PORTADA_CARDS[3]:
     with c1:
         mig = f["situacion_migratoria"].value_counts().reset_index()
         mig.columns = ["situacion_migratoria", "registros"]
-        fig_mig = px.pie(mig, names="situacion_migratoria", values="registros", title="Situacion migratoria",
+        fig_mig = px.pie(mig, names="situacion_migratoria", values="registros", title="Situación migratoria",
                           hole=0.4, color="situacion_migratoria", color_discrete_map=COLOR_SITUACION_MIGRATORIA)
         fig_mig.update_layout(height=380)
         _style_chart(fig_mig, legend=True)
@@ -893,7 +925,7 @@ if seccion_actual == PORTADA_CARDS[3]:
         mov = f["situacion_movilidad"].value_counts().head(10).reset_index()
         mov.columns = ["situacion_movilidad", "registros"]
         fig_mov = px.bar(mov.sort_values("registros"), x="registros", y="situacion_movilidad", orientation="h",
-                         title="Situacion de movilidad", color="situacion_movilidad",
+                         title="Situación de movilidad", color="situacion_movilidad",
                          color_discrete_map=COLOR_SITUACION_MOVILIDAD, text="registros")
         fig_mov.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
         fig_mov.update_layout(height=380)
@@ -904,7 +936,7 @@ if seccion_actual == PORTADA_CARDS[3]:
 
 if seccion_actual == PORTADA_CARDS[4]:
     plot_si_bars(
-        ["atencion_emergente", "kit_aseo", "kit_salud", "kit_escolar"],
+        ["atencion_emergente", "kit_aseo", "kit_salud", "kit_escolar", "kit_otro"],
         "Asistencia humanitaria entregada (% SI)",
         color=COLOR_SECCIONES[PORTADA_CARDS[4]],
     )
@@ -917,7 +949,42 @@ if seccion_actual == PORTADA_CARDS[5]:
             "part_encuentros_comunitarios", "part_talleres_nna",
             "part_redes_comunitarias",
         ],
-        "Participacion e integracion comunitaria (% SI)",
+        "Participación e integración comunitaria (% SI)",
         color=COLOR_SECCIONES[PORTADA_CARDS[5]],
     )
+    st.stop()
+
+if seccion_actual == PORTADA_CARDS[6]:
+    st.caption(
+        "Busca por nombre y apellido (o parte de ellos) para ver el historial "
+        "de atenciones de una persona. Esta información incluye datos sensibles: "
+        "úsala únicamente con fines internos de seguimiento de casos."
+    )
+    busqueda = st.text_input("Nombre y/o apellido", placeholder="Ej: Maria Perez")
+    buscar = st.button("🔎 Buscar")
+
+    if buscar or busqueda:
+        if not busqueda.strip():
+            st.info("Escribe un nombre o apellido para buscar.")
+        else:
+            termino = _norm_text(busqueda)
+            nombres_validos = f["nombre_completo"].fillna("")
+            coincide = nombres_validos.map(_norm_text).str.contains(termino, na=False)
+            resultados = f[coincide]
+            if resultados.empty:
+                st.warning("No se encontraron personas con ese nombre o apellido.")
+            else:
+                personas_encontradas = resultados["persona_id"].nunique()
+                st.success(f"{personas_encontradas} persona(s) encontrada(s), {len(resultados)} registro(s) en total.")
+                for pid, grupo in resultados.groupby("persona_id"):
+                    nombre_mostrar = grupo["nombre_completo"].dropna().iloc[0] if grupo["nombre_completo"].notna().any() else "(sin nombre)"
+                    with st.expander(f"🧑 {nombre_mostrar} — {len(grupo)} registro(s)"):
+                        columnas_mostrar = [
+                            "periodo", "zona", "provincia", "ciudad", "rango_edad", "sexo",
+                            "genero", "nacionalidad", "situacion_movilidad", "situacion_migratoria",
+                        ]
+                        columnas_mostrar = [c for c in columnas_mostrar if c in grupo.columns]
+                        tabla = grupo[columnas_mostrar].sort_values("periodo").copy()
+                        tabla["periodo"] = tabla["periodo"].apply(formato_mes_anio)
+                        st.dataframe(tabla, use_container_width=True, hide_index=True)
     st.stop()
